@@ -62,5 +62,5 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/${{ steps.repo.outputs.repo }}/redalert:latest
-            ghcr.io/${{ steps.repo.outputs.repo }}/redalert:${{ steps.getSemver.outputs.semver }} 
+            ghcr.io/${{ steps.repo.outputs.repo }}:latest
+            ghcr.io/${{ steps.repo.outputs.repo }}:${{ steps.getSemver.outputs.semver }} 
