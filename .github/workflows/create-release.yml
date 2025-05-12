@@ -1,0 +1,116 @@
+name: Create Release
+
+on:
+  push:
+    branches:
+      - master
+ 
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Get latest release version
+        id: get_version
+        run: |
+          if [ -f VERSION ]; then
+            echo "current_version=$(cat VERSION)" >> $GITHUB_OUTPUT
+          else
+            echo "current_version=0.0.0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Determine version bump
+        id: bump_version
+        run: |
+          # Get all commits since last release
+          if [ "${{ github.event_name }}" == "push" ]; then
+            COMMITS=$(git log $(git describe --tags --abbrev=0 2>/dev/null || git rev-list --max-parents=0 HEAD)..HEAD --pretty=format:"%s")
+          else
+            COMMITS=$(git log $(git describe --tags --abbrev=0 2>/dev/null || git rev-list --max-parents=0 HEAD)..${{ github.event.pull_request.merge_commit_sha }} --pretty=format:"%s")
+          fi
+
+          # Initialize bump type
+          BUMP_TYPE="patch"
+
+          # Check commit messages for version bump type
+          while IFS= read -r commit; do
+            if [[ $commit =~ ^(feat|feature)(\(.*\))?: ]]; then
+              BUMP_TYPE="minor"
+            elif [[ $commit =~ ^(break|breaking)(\(.*\))?: ]]; then
+              BUMP_TYPE="major"
+            fi
+          done <<< "$COMMITS"
+
+          echo "bump_type=$BUMP_TYPE" >> $GITHUB_OUTPUT
+
+      - name: Calculate new version
+        id: new_version
+        run: |
+          CURRENT_VERSION=${{ steps.get_version.outputs.current_version }}
+          BUMP_TYPE=${{ steps.bump_version.outputs.bump_type }}
+          
+          IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
+          
+          case $BUMP_TYPE in
+            "major")
+              major=$((major + 1))
+              minor=0
+              patch=0
+              ;;
+            "minor")
+              minor=$((minor + 1))
+              patch=0
+              ;;
+            "patch")
+              patch=$((patch + 1))
+              ;;
+          esac
+          
+          NEW_VERSION="$major.$minor.$patch"
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Update VERSION file
+        run: |
+          echo "${{ steps.new_version.outputs.new_version }}" > VERSION
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release v${{ steps.new_version.outputs.new_version }}
+          body: |
+            ## Changes in this Release
+            
+            ### Major Changes
+            ${{ steps.bump_version.outputs.major_changes }}
+            
+            ### Features
+            ${{ steps.bump_version.outputs.features }}
+            
+            ### Fixes
+            ${{ steps.bump_version.outputs.fixes }}
+            
+            ### Other Changes
+            ${{ steps.bump_version.outputs.others }}
+          tag_name: v${{ steps.new_version.outputs.new_version }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit and push VERSION file
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add VERSION
+          git commit -m "chore: bump version to ${{ steps.new_version.outputs.new_version }}"
+          git push 

@@ -1,0 +1,62 @@
+<context>
+# Overview  
+A fully asynchronous, minimal RedAlert relay system for real-time alert distribution. The system ingests alerts from the Oref API and relays them via MQTT to subscribers. All extraneous notification mechanisms and alarm/test logic are removed. The codebase uses only standard Python logging and is implemented with asyncio for maximum efficiency and maintainability.
+
+# Core Features  
+- **Async MQTT Alert Relay**
+  - Publishes the entire alert payload to the `/redalert/raw_data` topic using asyncio and an async MQTT client.
+  - Publishes the data section alert payload to the `/redalert/data` topic using asyncio and an async MQTT client.
+  - Removes all alarm logic, test alert handling, and non-MQTT notification outputs.
+  - Uses only standard Python logging for all logs.
+- **Efficient Resource Usage**
+  - Minimal dependencies: only asyncio, aiohttp (for HTTP), and an async MQTT client (e.g., asyncio-mqtt).
+  - Reduced memory and CPU footprint.
+- **Configurable via Environment Variables**
+  - MQTT host, port, user, password, topic, and region are all configurable.
+
+# User Experience  
+- **User Personas**: System integrators, home automation users, and developers who need real-time alert data for further processing.
+- **Key User Flows**: System starts, connects to MQTT, fetches alerts asynchronously, and relays them to `/redalert/data`.
+- **UI/UX Considerations**: No UI; headless service. All configuration via environment variables.
+</context>
+<PRD>
+# Technical Architecture  
+- **System Components**:
+  - Python async script (redalert.py) running as a service
+  - MQTT broker (external)
+- **Data Models**:
+  - Alert JSON payloads as received from Oref API
+- **APIs and Integrations**:
+  - Oref API (HTTP GET via aiohttp)
+  - MQTT (publish to `/redalert/data` via asyncio-mqtt)
+- **Infrastructure Requirements**:
+  - Python 3.8+
+  - asyncio-mqtt
+  - aiohttp
+
+# Development Roadmap  
+- **MVP Requirements**:
+  - Refactor code to be fully async (asyncio, aiohttp, asyncio-mqtt)
+  - Remove all alarm logic, test alert handling, and non-MQTT notification logic
+  - Use only standard Python logging
+  - Publish the entire alert payload to `/redalert/data`
+  - Ensure robust error handling and reconnection logic
+- **Future Enhancements**:
+  - Add metrics/health endpoint
+  - Support for additional alert sources
+
+# Logical Dependency Chain
+- Refactor to async and standard logging
+- Remove alarm/test logic and non-MQTT outputs
+- Update publish logic to send only to `/redalert/data`
+- Test end-to-end with MQTT subscriber
+
+# Risks and Mitigations  
+- **Technical challenges**: Ensuring reliable async MQTT connection and reconnection; mitigated by robust error handling and retries.
+- **MVP scoping**: Focus on minimal, working async relay; defer all non-MQTT features.
+- **Resource constraints**: Minimal dependencies reduce risk.
+
+# Appendix  
+- Oref API documentation
+- Example alert payloads
+</PRD> 
