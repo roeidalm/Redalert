@@ -12,6 +12,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      packages: write
     outputs:
       new_version: ${{ steps.new_version.outputs.new_version }}
 
