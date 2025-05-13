@@ -7,9 +7,9 @@ The **RedAlert Relay System** is a Python-based service that fetches real-time a
 ## Features
 
 - **Fetches alerts** from the official Oref API using `aiohttp`.
-- **Relays alerts** to MQTT topics using `asyncio-mqtt`.
-- **Filters out test alerts** (configurable).
-- **Prevents duplicate publishing** and cleans up old alerts.
+- **Relays alerts** to MQTT topics using `aiomqtt` (not `asyncio-mqtt`).
+- **Filters out test alerts** (configurable via `INCLUDE_TEST_ALERTS`).
+- **Prevents duplicate publishing** and cleans up old alerts (1 hour retention).
 - **Configurable** via environment variables.
 - **Ready for Docker and Docker Compose deployment**.
 
@@ -39,7 +39,7 @@ The **RedAlert Relay System** is a Python-based service that fetches real-time a
 
 ## MQTT Topics
 
-- **`${MQTT_TOPIC}/data`**: Publishes the main alert data (JSON).
+- **`${MQTT_TOPIC}/data`**: Publishes the main alert data (JSON array of locations).
 - **`${MQTT_TOPIC}/raw_data`**: Publishes the full raw alert payload (JSON).
 
 ---
@@ -68,6 +68,9 @@ services:
       - MQTT_USER=[Broker Username]
       - MQTT_PASS=[Broker Password]
       - INCLUDE_TEST_ALERTS=[False|True]
+      - MQTT_PORT=1883
+      - MQTT_TOPIC=/redalert
+      - DEBUG=False
 ```
 
 Then start the service:
@@ -85,6 +88,9 @@ docker run -d \
   -e MQTT_USER=myuser \
   -e MQTT_PASS=mypassword \
   -e INCLUDE_TEST_ALERTS=False \
+  -e MQTT_PORT=1883 \
+  -e MQTT_TOPIC=/redalert \
+  -e DEBUG=False \
   techblog/redalert
 ```
 
@@ -105,6 +111,9 @@ docker run -d \
    export MQTT_USER=myuser
    export MQTT_PASS=mypassword
    export INCLUDE_TEST_ALERTS=False
+   export MQTT_PORT=1883
+   export MQTT_TOPIC=/redalert
+   export DEBUG=False
    ```
 
 3. **Run the script:**
@@ -117,11 +126,12 @@ docker run -d \
 
 ## How It Works
 
-- The service continuously polls the Oref API for new alerts.
+- The service continuously polls the Oref API for new alerts (every second).
 - Each new alert (not previously seen and not a test alert, unless allowed) is published to the configured MQTT topics.
-- Alerts are tracked for 1 hour to prevent duplicate publishing.
+- Alerts are tracked for 1 hour to prevent duplicate publishing (configurable via `ALERT_TTL` in `redalert.py`).
 - Old alerts are cleaned up every 60 seconds.
-- If the MQTT connection fails, the service will automatically attempt to reconnect.
+- If the MQTT connection fails, the service will automatically attempt to reconnect after 5 seconds.
+- Debug mode (`DEBUG=True`) will use static test data instead of live API data.
 
 ---
 
@@ -155,7 +165,7 @@ Feel free to open issues or submit pull requests for improvements or bug fixes.
 
 ## License
 
-MIT License
+This project is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0). See the [LICENSE](LICENSE) file for details.
 
 ---
 
