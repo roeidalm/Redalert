@@ -25,14 +25,15 @@ The **RedAlert Relay System** is a Python-based service that fetches real-time a
 
 ## Environment Variables
 
-| Variable              | Description                                 | Default         | Example                |
-|-----------------------|---------------------------------------------|-----------------|------------------------|
-| `MQTT_HOST`           | MQTT broker address                         | 127.0.0.1       | `mqtt.example.com`     |
-| `MQTT_PORT`           | MQTT broker port                            | 1883            | `1883`                 |
-| `MQTT_USER`           | MQTT username                               | user            | `myuser`               |
-| `MQTT_PASS`           | MQTT password                               | password        | `mypassword`           |
-| `MQTT_TOPIC`          | Base MQTT topic for alerts                  | /redalert       | `/alerts`              |
-| `INCLUDE_TEST_ALERTS` | Include test alerts (True/False)            | False           | `True`                 |
+| Variable              | Description                                   | Default         | Example                |
+|-----------------------|-----------------------------------------------|-----------------|------------------------|
+| `MQTT_HOST`           | MQTT broker address                           | 127.0.0.1       | `mqtt.example.com`     |
+| `MQTT_PORT`           | MQTT broker port                              | 1883            | `1883`                 |
+| `MQTT_USER`           | MQTT username                                 | user            | `myuser`               |
+| `MQTT_PASS`           | MQTT password                                 | password        | `mypassword`           |
+| `MQTT_TOPIC`          | Base MQTT topic for alerts                    | /redalert       | `/alerts`              |
+| `INCLUDE_TEST_ALERTS` | Include test alerts (True/False)              | False           | `True`                 |
+| `DEBUG`               | Enable debug mode with test data (True/False) | False           | `True`                 |
 
 ---
 
