@@ -169,10 +169,4 @@ This project is licensed under the [Apache License 2.0](https://www.apache.org/l
 
 ---
 
-## Contact
-
-Maintainer: [roiedalm68@gmail.com](mailto:roiedalm68@gmail.com)
-
----
-
 **This documentation is auto-generated based on the current code and deployment files. For updates, always refer to the latest codebase.**

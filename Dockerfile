@@ -1,7 +1,5 @@
 FROM python:3.12-alpine
 
-LABEL maintainer="roiedalm68@gmail.com"
-
 RUN rm -rf /var/cache/apk/*
 
 #install python dependencies from requirements.txt
