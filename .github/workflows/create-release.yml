@@ -12,6 +12,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    outputs:
+      new_version: ${{ steps.new_version.outputs.new_version }}
 
     steps:
       - name: Checkout code
@@ -74,10 +76,6 @@ jobs:
           NEW_VERSION="$major.$minor.$patch"
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
 
-      - name: Update VERSION file
-        run: |
-          echo "${{ steps.new_version.outputs.new_version }}" > VERSION
-
       - name: Create Release
         id: create_release
         uses: softprops/action-gh-release@v1
@@ -103,10 +101,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Commit and push VERSION file
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add VERSION
-          git commit -m "chore: bump version to ${{ steps.new_version.outputs.new_version }}"
-          git push 
+  docker:
+    needs: create-release
+    uses: ./.github/workflows/docker-image-ghcr.yml
+    with:
+      version: ${{ needs.create-release.outputs.new_version }}
+      platforms: linux/amd64,linux/arm64
+      run_tests: true
+    secrets: inherit 

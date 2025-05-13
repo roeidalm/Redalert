@@ -2,11 +2,27 @@ name: "Docker Build - GitHub Container Registry"
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version to tag the Docker image with'
+        required: false
+        default: 'latest'
+        type: string
+      platforms:
+        description: 'Platforms to build for'
+        required: false
+        default: 'linux/amd64'
+        type: string
+      run_tests:
+        description: 'Whether to run tests before building'
+        required: false
+        default: true
+        type: boolean
   workflow_run:
     workflows: [Create Release]
     types:
       - completed  
-
 jobs:
   docker:
     runs-on: ubuntu-latest
@@ -34,24 +50,34 @@ jobs:
 
       - name: Get semantic version from file
         id: getSemver
+        if: ${{ github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch' }}
         run: echo "semver=$(cat VERSION | tr -d ' \t\n\r' )" >> $GITHUB_OUTPUT
+
+      - name: Get version from input
+        id: getVersion
+        if: ${{ github.event_name == 'workflow_call' }}
+        run: echo "semver=${{ inputs.version }}" >> $GITHUB_OUTPUT
 
       - name: Get lowercase repository name
         id: repo
         run: echo "repo=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
       - name: Set up Python
+        if: ${{ inputs.run_tests != false }}
         uses: actions/setup-python@v4
         with:
           python-version: '3.12'
 
       - name: Install runtime dependencies
+        if: ${{ inputs.run_tests != false }}
         run: pip install -r requirements.txt
 
       - name: Install test dependencies
+        if: ${{ inputs.run_tests != false }}
         run: pip install pytest pytest-asyncio
 
       - name: Run tests
+        if: ${{ inputs.run_tests != false }}
         run: pytest
 
       -
@@ -59,8 +85,8 @@ jobs:
         uses: docker/build-push-action@v2
         with:
           context: .
-          platforms: linux/amd64
+          platforms: ${{ inputs.platforms || 'linux/amd64' }}
           push: true
           tags: |
             ghcr.io/${{ steps.repo.outputs.repo }}:latest
-            ghcr.io/${{ steps.repo.outputs.repo }}:${{ steps.getSemver.outputs.semver }} 
+            ghcr.io/${{ steps.repo.outputs.repo }}:${{ github.event_name == 'workflow_call' && steps.getVersion.outputs.semver || steps.getSemver.outputs.semver }} 
