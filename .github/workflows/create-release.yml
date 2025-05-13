@@ -26,11 +26,11 @@ jobs:
       - name: Get latest release version
         id: get_version
         run: |
-          if [ -f VERSION ]; then
-            echo "current_version=$(cat VERSION)" >> $GITHUB_OUTPUT
-          else
-            echo "current_version=0.0.0" >> $GITHUB_OUTPUT
-          fi
+          # Get the latest release tag
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          # Remove the 'v' prefix if it exists
+          CURRENT_VERSION=${LATEST_TAG#v}
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
 
       - name: Determine version bump
         id: bump_version

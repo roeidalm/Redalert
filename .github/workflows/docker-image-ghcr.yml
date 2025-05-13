@@ -89,4 +89,4 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ steps.repo.outputs.repo }}:latest
-            ghcr.io/${{ steps.repo.outputs.repo }}:${{ github.event_name == 'workflow_call' && steps.getVersion.outputs.semver || steps.getSemver.outputs.semver }} 
+            ghcr.io/${{ steps.repo.outputs.repo }}:${{ github.event_name == 'workflow_call' && steps.getVersion.outputs.semver || steps.getSemver.outputs.semver || 'latest' }} 
