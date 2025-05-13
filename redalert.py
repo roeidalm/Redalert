@@ -12,7 +12,11 @@ os.environ['PYTHONIOENCODING'] = 'utf-8'
 os.environ['LANG'] = 'C.UTF-8'
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(funcName)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 logger = logging.getLogger("redalert")
 
 # MQTT connection Params
@@ -22,8 +26,8 @@ user = os.getenv('MQTT_USER', 'user')
 passw = os.getenv('MQTT_PASS', 'password')
 MQTT_TOPIC = os.environ.get("MQTT_TOPIC", "/redalert")
 INCLUDE_TEST_ALERTS = os.getenv("INCLUDE_TEST_ALERTS", "False")
-
-logger.info(f"Monitoring alerts for")
+IS_DEBUG = os.getenv("DEBUG", "False")
+logger.info(f"Monitoring alerts, sending to topic: {MQTT_TOPIC}")
 
 _headers = {
     'Referer': 'https://www.oref.org.il/',
@@ -32,6 +36,8 @@ _headers = {
 }
 url = 'https://www.oref.org.il/WarningMessages/alert/alerts.json'
 
+DEBUG_ALERT_DATA="{\"id\":\"133908130700000000\",\"cat\":\"10\",\"title\":\"בדקות הקרובות צפויות להתקבל התרעות באזורך\",\"data\":[\"ירושלים - מערב\",\"ירושלים - צפון\"],\"desc\":\"עליך לשפר את מיקומך למיגון המיטבי בקרבתך. במקרה של קבלת התרעה, יש להיכנס למרחב המוגן ולשהות בו 10 דקות.\"}"
+
 # Replace alerts set with a dict for time-based cleanup
 alerts = {}
 ALERT_TTL = 3600  # 1 hour in seconds
@@ -39,18 +45,23 @@ ALERT_TTL = 3600  # 1 hour in seconds
 def is_test_alert(alert):
     return INCLUDE_TEST_ALERTS == 'False' and ('בדיקה' in alert.get('data', '') or 'בדיקה מחזורית' in alert.get('data', ''))
 
-async def fetch_alert(session):
+async def fetch_alert(session: aiohttp.ClientSession):
     try:
         async with await session.get(url, headers=_headers) as response:
             if response.status != 200:
                 logger.warning(f"Failed to fetch alerts: HTTP {response.status}")
                 return None
             alert_data = await response.text(encoding='utf-8-sig')
+            if IS_DEBUG == "True":
+                alert_data=DEBUG_ALERT_DATA
             if not alert_data or alert_data.isspace():
                 return None
             alert = json.loads(alert_data)
             logger.info("Alert data successfully parsed.")
             return alert
+    except json.JSONDecodeError as jde:
+        logger.error(f"Failed to parse JSON: {jde}, raw data: {alert_data[:100]}...")
+        return None
     except Exception as ex:
         logger.error(f"Exception during fetch_alert: {ex}")
         return None

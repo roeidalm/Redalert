@@ -90,4 +90,24 @@ async def test_monitor_handles_mqtt_error(monkeypatch):
     try:
         await redalert.monitor()
     except asyncio.CancelledError:
-        pass 
+        pass
+
+@pytest.mark.asyncio
+async def test_fetch_alert_realistic_json():
+    # This is the realistic JSON returned by the Oref API
+    json_data = {
+        "id": "133908130700000000",
+        "cat": "10",
+        "title": "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+        "data": ["ירושלים - מערב", "ירושלים - צפון"],
+        "desc": "עליך לשפר את מיקומך למיגון המיטבי בקרבתך. במקרה של קבלת התרעה, יש להיכנס למרחב המוגן ולשהות בו 10 דקות."
+    }
+    session = AsyncMock()
+    session.get = make_awaitable_response(200, json.dumps(json_data))
+    alert = await redalert.fetch_alert(session)
+    assert alert["id"] == "133908130700000000"
+    assert alert["cat"] == "10"
+    assert alert["title"] == "בדקות הקרובות צפויות להתקבל התרעות באזורך"
+    assert alert["data"] == ["ירושלים - מערב", "ירושלים - צפון"]
+    assert "desc" in alert
+    assert "מרחב המוגן" in alert["desc"] 
