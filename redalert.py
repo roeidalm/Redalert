@@ -54,7 +54,7 @@ async def fetch_alert(session: aiohttp.ClientSession):
             alert_data = await response.text(encoding='utf-8-sig')
             if IS_DEBUG == "True":
                 alert_data=DEBUG_ALERT_DATA
-            if not alert_data or alert_data.isspace():
+            if len(alert_data) < 5 or not alert_data or alert_data.isspace():
                 return None
             alert = json.loads(alert_data)
             logger.info("Alert data successfully parsed.")
