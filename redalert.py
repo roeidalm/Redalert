@@ -60,7 +60,7 @@ async def fetch_alert(session: aiohttp.ClientSession):
             logger.info("Alert data successfully parsed.")
             return alert
     except json.JSONDecodeError as jde:
-        logger.error(f"Failed to parse JSON: {jde}, raw data: {alert_data[:100]}...")
+        logger.error(f"Failed to parse JSON: {jde}, raw data: {response.text()}...")
         return None
     except Exception as ex:
         logger.error(f"Exception during fetch_alert: {ex}")
