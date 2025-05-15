@@ -44,7 +44,6 @@ ALERT_TTL = 3600  # 1 hour in seconds
 
 def is_test_alert(alert):
     return INCLUDE_TEST_ALERTS == 'False' and ('בדיקה' in alert.get('data', '') or 'בדיקה מחזורית' in alert.get('data', ''))
-
 async def fetch_alert(session: aiohttp.ClientSession):
     try:
         async with await session.get(url, headers=_headers) as response:
@@ -60,7 +59,7 @@ async def fetch_alert(session: aiohttp.ClientSession):
             logger.info("Alert data successfully parsed.")
             return alert
     except json.JSONDecodeError as jde:
-        logger.error(f"Failed to parse JSON: {jde}, raw data: {response.text()}...")
+        logger.error(f"Failed to parse JSON: {jde}, raw data: {await response.text()}...")
         return None
     except Exception as ex:
         logger.error(f"Exception during fetch_alert: {ex}")
