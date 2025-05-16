@@ -56,9 +56,9 @@ async def fetch_alert(session: aiohttp.ClientSession):
             else:
                 # Get response text and clean null bytes
                 alert_data = await response.text(encoding='utf-8-sig')
-                alert_data = alert_data.replace('\x00', '')
-
-            if len(alert_data) < 5 or not alert_data or alert_data.isspace():
+                alert_data = alert_data.replace('\x00', '').strip()
+                
+            if not alert_data or alert_data.isspace():
                 return None
 
             alert = json.loads(alert_data)
