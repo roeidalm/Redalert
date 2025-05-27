@@ -49,10 +49,32 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Install test dependencies
-        run: pip install pytest pytest-asyncio
+        run: pip install -r requirements-test.txt
 
-      - name: Run tests
-        run: pytest
+      - name: Run tests with coverage
+        run: coverage run -m pytest tests/test_redalert.py -v
+
+      - name: Generate coverage report
+        run: |
+          echo "## Test Coverage Report" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          coverage report -m --include="redalert.py" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+      - name: Coverage Badge
+        run: |
+          COVERAGE=$(coverage report --include="redalert.py" | grep TOTAL | awk '{print $4}' | sed 's/%//')
+          echo "Coverage: ${COVERAGE}%"
+          if [ "$COVERAGE" -ge 90 ]; then
+            echo "✅ Excellent coverage (${COVERAGE}%)"
+          elif [ "$COVERAGE" -ge 80 ]; then
+            echo "✅ Good coverage (${COVERAGE}%)"
+          elif [ "$COVERAGE" -ge 70 ]; then
+            echo "⚠️ Acceptable coverage (${COVERAGE}%)"
+          else
+            echo "❌ Low coverage (${COVERAGE}%)"
+            exit 1
+          fi
 
       -
         name: Build and push

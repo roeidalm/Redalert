@@ -7,6 +7,19 @@ import json
 import logging
 import aiomqtt
 import time
+from dataclasses import dataclass, asdict
+from typing import List, Optional
+
+@dataclass
+class AlertObject:
+    id: str
+    cat: str
+    title: str
+    data: List[str]
+    desc: str
+
+    def to_json_str(self) -> str:
+        return json.dumps(asdict(self))
 
 os.environ['PYTHONIOENCODING'] = 'utf-8'
 os.environ['LANG'] = 'C.UTF-8'
@@ -49,9 +62,12 @@ DEBUG_ALERT_DATA = {
 alerts = {}
 ALERT_TTL = 3600  # 1 hour in seconds
 
-def is_test_alert(alert):
-    return INCLUDE_TEST_ALERTS == 'False' and ('בדיקה' in alert.get('data', '') or 'בדיקה מחזורית' in alert.get('data', ''))
-async def fetch_alert(session: aiohttp.ClientSession):
+
+def is_test_alert(alert: AlertObject) -> bool:
+    return INCLUDE_TEST_ALERTS == 'False' and ('בדיקה' in alert.data or 'בדיקה מחזורית' in alert.data)
+
+
+async def fetch_alert(session: aiohttp.ClientSession) -> Optional[AlertObject]:
     try:
         async with await session.get(url, headers=_headers) as response:
             if response.status != 200:
@@ -72,8 +88,16 @@ async def fetch_alert(session: aiohttp.ClientSession):
                 return None
 
             alert = json.loads(alert_data)
+            # Convert alert data to dataclass
+            alert_object = AlertObject(
+                id=alert.get("id", f"random-id-{time.time()}"),
+                cat=alert.get("cat", "-1"),
+                title=alert.get("title", "unknown"),
+                data=alert.get("data", []),
+                desc=alert.get("desc", "unknown")
+            )
             logger.debug("Alert data successfully parsed.")
-            return alert
+            return alert_object
     except json.JSONDecodeError as jde:
         logger.error(f"Failed to parse JSON: {jde}, raw data: {await response.text()}...")
         return None
@@ -81,12 +105,13 @@ async def fetch_alert(session: aiohttp.ClientSession):
         logger.error(f"Exception during fetch_alert: {ex}")
         return None
 
-async def publish_alert(mqtt_client, alert):
+
+async def publish_alert(mqtt_client: aiomqtt.Client, alert: AlertObject):
     try:
         # Publish the data section
-        await mqtt_client.publish(f"{MQTT_TOPIC}/cat/{alert.get('cat', '')}", json.dumps({"data": alert.get('data', [])}), qos=0)
+        await mqtt_client.publish(f"{MQTT_TOPIC}/cat/{alert.cat}", json.dumps({"data": alert.data}), qos=0)
         # Publish the full raw alert
-        await mqtt_client.publish(f"{MQTT_TOPIC}/raw_data", json.dumps(alert), qos=0)
+        await mqtt_client.publish(f"{MQTT_TOPIC}/raw_data", alert.to_json_str(), qos=0)
         logger.info("Alert published to MQTT topics.")
     except Exception as e:
         logger.error(f"Failed to publish alert to MQTT: {e}")
@@ -112,9 +137,9 @@ async def monitor():
                     logger.info("Connected to MQTT broker.")
                     while True:
                         alert = await fetch_alert(session)
-                        if alert and alert.get("id") not in alerts and not is_test_alert(alert):
-                            alerts[alert["id"]] = time.time()
-                            logger.info(f"New alert: {alert}")
+                        if alert and alert.id not in alerts and not is_test_alert(alert):
+                            alerts[alert.id] = time.time()
+                            logger.info(f"New alert: {alert.to_json_str()}")
                             await publish_alert(mqtt_client, alert)
                         # Cleanup every 60 seconds
                         if time.time() - last_cleanup > 60:
