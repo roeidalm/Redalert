@@ -36,7 +36,14 @@ _headers = {
 }
 url = 'https://www.oref.org.il/WarningMessages/alert/alerts.json'
 
-DEBUG_ALERT_DATA="{\"id\":\"133908130700000000\",\"cat\":\"10\",\"title\":\"בדקות הקרובות צפויות להתקבל התרעות באזורך\",\"data\":[\"ירושלים - מערב\",\"ירושלים - צפון\"],\"desc\":\"עליך לשפר את מיקומך למיגון המיטבי בקרבתך. במקרה של קבלת התרעה, יש להיכנס למרחב המוגן ולשהות בו 10 דקות.\"}"
+index = 0
+DEBUG_ALERT_DATA = {
+    "id": "133908130700000000",
+    "cat": "10",
+    "title": "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+    "data": ["ירושלים - מערב", "ירושלים - צפון"],
+    "desc": "עליך לשפר את מיקומך למיגון המיטבי בקרבתך. במקרה של קבלת התרעה, יש להיכנס למרחב המוגן ולשהות בו 10 דקות."
+}
 
 # Replace alerts set with a dict for time-based cleanup
 alerts = {}
@@ -52,7 +59,10 @@ async def fetch_alert(session: aiohttp.ClientSession):
                 return None
 
             if IS_DEBUG == "True":
-                alert_data = DEBUG_ALERT_DATA
+                global index
+                index += 1
+                DEBUG_ALERT_DATA["id"] = str(index)
+                alert_data = json.dumps(DEBUG_ALERT_DATA)
             else:
                 # Get response text and clean null bytes
                 alert_data = await response.text(encoding='utf-8-sig')
@@ -62,7 +72,7 @@ async def fetch_alert(session: aiohttp.ClientSession):
                 return None
 
             alert = json.loads(alert_data)
-            logger.info("Alert data successfully parsed.")
+            logger.debug("Alert data successfully parsed.")
             return alert
     except json.JSONDecodeError as jde:
         logger.error(f"Failed to parse JSON: {jde}, raw data: {await response.text()}...")
@@ -74,7 +84,7 @@ async def fetch_alert(session: aiohttp.ClientSession):
 async def publish_alert(mqtt_client, alert):
     try:
         # Publish the data section
-        await mqtt_client.publish(f"{MQTT_TOPIC}/data", json.dumps(alert.get('data', {})), qos=0)
+        await mqtt_client.publish(f"{MQTT_TOPIC}/cat/{alert.get('cat', '')}", json.dumps({"data": alert.get('data', [])}), qos=0)
         # Publish the full raw alert
         await mqtt_client.publish(f"{MQTT_TOPIC}/raw_data", json.dumps(alert), qos=0)
         logger.info("Alert published to MQTT topics.")
