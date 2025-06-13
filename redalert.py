@@ -17,9 +17,7 @@ class AlertObject:
     title: str
     data: List[str]
     desc: str
-
-    def to_json_str(self) -> str:
-        return json.dumps(asdict(self))
+    raw_data: str
 
 os.environ['PYTHONIOENCODING'] = 'utf-8'
 os.environ['LANG'] = 'C.UTF-8'
@@ -78,7 +76,7 @@ async def fetch_alert(session: aiohttp.ClientSession) -> Optional[AlertObject]:
                 global index
                 index += 1
                 DEBUG_ALERT_DATA["id"] = str(index)
-                alert_data = json.dumps(DEBUG_ALERT_DATA)
+                alert_data = json.dumps(DEBUG_ALERT_DATA, ensure_ascii=False)
             else:
                 # Get response text and clean null bytes
                 alert_data = await response.text(encoding='utf-8-sig')
@@ -94,7 +92,8 @@ async def fetch_alert(session: aiohttp.ClientSession) -> Optional[AlertObject]:
                 cat=alert.get("cat", "-1"),
                 title=alert.get("title", "unknown"),
                 data=alert.get("data", []),
-                desc=alert.get("desc", "unknown")
+                desc=alert.get("desc", "unknown"),
+                raw_data=alert_data
             )
             logger.debug("Alert data successfully parsed.")
             return alert_object
@@ -109,9 +108,9 @@ async def fetch_alert(session: aiohttp.ClientSession) -> Optional[AlertObject]:
 async def publish_alert(mqtt_client: aiomqtt.Client, alert: AlertObject):
     try:
         # Publish the data section
-        await mqtt_client.publish(f"{MQTT_TOPIC}/cat/{alert.cat}", json.dumps({"data": alert.data}), qos=0)
+        await mqtt_client.publish(f"{MQTT_TOPIC}/cat/{alert.cat}", json.dumps({"title": alert.title, "data": alert.data, "desc": alert.desc}, ensure_ascii=False), qos=0)
         # Publish the full raw alert
-        await mqtt_client.publish(f"{MQTT_TOPIC}/raw_data", alert.to_json_str(), qos=0)
+        await mqtt_client.publish(f"{MQTT_TOPIC}/raw_data", alert.raw_data, qos=0)
         logger.info("Alert published to MQTT topics.")
     except Exception as e:
         logger.error(f"Failed to publish alert to MQTT: {e}")
@@ -139,7 +138,7 @@ async def monitor():
                         alert = await fetch_alert(session)
                         if alert and alert.id not in alerts and not is_test_alert(alert):
                             alerts[alert.id] = time.time()
-                            logger.info(f"New alert: {alert.to_json_str()}")
+                            logger.info(f"New alert: {alert.raw_data}")
                             await publish_alert(mqtt_client, alert)
                         # Cleanup every 60 seconds
                         if time.time() - last_cleanup > 60:

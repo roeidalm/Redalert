@@ -34,7 +34,8 @@ def test_alert_object_creation():
         cat="10",
         title="Test Alert",
         data=["Area 1", "Area 2"],
-        desc="Test description"
+        desc="Test description",
+        raw_data=""
     )
     assert alert.id == "123"
     assert alert.cat == "10"
@@ -49,9 +50,16 @@ def test_alert_object_to_json_str():
         cat="10",
         title="Test Alert",
         data=["Area 1", "Area 2"],
-        desc="Test description"
+        desc="Test description",
+        raw_data=""
     )
-    json_str = alert.to_json_str()
+    json_str = json.dumps({
+        "id": alert.id,
+        "cat": alert.cat,
+        "title": alert.title,
+        "data": alert.data,
+        "desc": alert.desc
+    }, ensure_ascii=False)
     parsed = json.loads(json_str)
     assert parsed["id"] == "123"
     assert parsed["cat"] == "10"
@@ -69,7 +77,8 @@ def test_is_test_alert_with_test_data():
         cat="10",
         title="Test Alert",
         data=["בדיקה", "Area 2"],
-        desc="Test description"
+        desc="Test description",
+        raw_data=""
     )
     assert redalert.is_test_alert(alert) == True
 
@@ -80,7 +89,8 @@ def test_is_test_alert_with_periodic_test():
         cat="10",
         title="Test Alert",
         data=["Area 1", "בדיקה מחזורית"],
-        desc="Test description"
+        desc="Test description",
+        raw_data=""
     )
     assert redalert.is_test_alert(alert) == True
 
@@ -91,7 +101,8 @@ def test_is_test_alert_with_normal_data():
         cat="10",
         title="Test Alert",
         data=["ירושלים - מערב", "ירושלים - צפון"],
-        desc="Test description"
+        desc="Test description",
+        raw_data=""
     )
     assert redalert.is_test_alert(alert) == False
 
@@ -105,7 +116,8 @@ def test_is_test_alert_when_including_tests():
             cat="10",
             title="Test Alert",
             data=["בדיקה", "Area 2"],
-            desc="Test description"
+            desc="Test description",
+            raw_data=""
         )
         assert redalert.is_test_alert(alert) == False
 
@@ -244,7 +256,14 @@ async def test_publish_alert_success():
         cat="10",
         title="Test Alert",
         data=["Area 1", "Area 2"],
-        desc="Test description"
+        desc="Test description",
+        raw_data=json.dumps({
+            "id": "123",
+            "cat": "10",
+            "title": "Test Alert",
+            "data": ["Area 1", "Area 2"],
+            "desc": "Test description"
+        }, ensure_ascii=False)
     )
 
     await redalert.publish_alert(mqtt_client, alert)
@@ -259,15 +278,17 @@ async def test_publish_alert_success():
     first_call = calls[0]
     assert first_call[0][0] == f"{redalert.MQTT_TOPIC}/cat/10"  # topic
     assert json.loads(first_call[0][1]) == {
-        "data": ["Area 1", "Area 2"]}  # payload
+        "title": "Test Alert",
+        "data": ["Area 1", "Area 2"],
+        "desc": "Test description"
+    }  # payload
     assert first_call[1]['qos'] == 0 or (
         len(first_call[0]) > 2 and first_call[0][2] == 0)  # qos
 
     # Second call should be to raw_data topic
     second_call = calls[1]
     assert second_call[0][0] == f"{redalert.MQTT_TOPIC}/raw_data"  # topic
-    assert json.loads(second_call[0][1]) == json.loads(
-        alert.to_json_str())  # payload
+    assert json.loads(second_call[0][1]) == json.loads(alert.raw_data)  # payload
     assert second_call[1]['qos'] == 0 or (
         len(second_call[0]) > 2 and second_call[0][2] == 0)  # qos
 
@@ -280,7 +301,14 @@ async def test_publish_alert_error():
         cat="10",
         title="Test Alert",
         data=["Area 1", "Area 2"],
-        desc="Test description"
+        desc="Test description",
+        raw_data=json.dumps({
+            "id": "123",
+            "cat": "10",
+            "title": "Test Alert",
+            "data": ["Area 1", "Area 2"],
+            "desc": "Test description"
+        }, ensure_ascii=False)
     )
 
     # Should not raise exception
@@ -340,7 +368,7 @@ async def test_monitor_alert_deduplication(monkeypatch):
 
     # Mock fetch_alert to return the same alert multiple times
     async def mock_fetch_alert(session):
-        return redalert.AlertObject(**alert_data)
+        return redalert.AlertObject(**alert_data, raw_data="")
 
     # Mock MQTT client
     mock_mqtt_client = AsyncMock()
