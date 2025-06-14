@@ -72,15 +72,14 @@ async def fetch_alert(session: aiohttp.ClientSession) -> Optional[AlertObject]:
                 logger.warning(f"Failed to fetch alerts: HTTP {response.status}")
                 return None
 
+            alert_data = await response.text(encoding='utf-8-sig')
+            alert_data = alert_data.replace('\x00', '').strip()
+            
             if IS_DEBUG == "True":
                 global index
                 index += 1
                 DEBUG_ALERT_DATA["id"] = str(index)
                 alert_data = json.dumps(DEBUG_ALERT_DATA, ensure_ascii=False)
-            else:
-                # Get response text and clean null bytes
-                alert_data = await response.text(encoding='utf-8-sig')
-                alert_data = alert_data.replace('\x00', '').strip()
                 
             if not alert_data or alert_data.isspace():
                 return None
@@ -138,7 +137,7 @@ async def monitor():
                         alert = await fetch_alert(session)
                         if alert and alert.id not in alerts and not is_test_alert(alert):
                             alerts[alert.id] = time.time()
-                            logger.info(f"New alert: {alert.raw_data}")
+                            logger.info(f"New alert: {alert.raw_data.replace(chr(10), '').replace(chr(13), '').replace('  ', ' ')}")
                             await publish_alert(mqtt_client, alert)
                         # Cleanup every 60 seconds
                         if time.time() - last_cleanup > 60:
