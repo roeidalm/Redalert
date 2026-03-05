@@ -612,7 +612,7 @@ async def test_run_health_server(monkeypatch):
     mock_site = AsyncMock()
 
     monkeypatch.setattr(redalert.aiohttp.web, 'Application', lambda: mock_app)
-    monkeypatch.setattr(redalert.aiohttp.web, 'AppRunner', lambda app: mock_runner)
+    monkeypatch.setattr(redalert.aiohttp.web, 'AppRunner', lambda *a, **kw: mock_runner)
     monkeypatch.setattr(redalert.aiohttp.web, 'TCPSite', lambda runner, host, port: mock_site)
 
     async def fake_sleep(*args, **kwargs):

@@ -138,11 +138,11 @@ async def health_handler(request):
 async def run_health_server():
     app = aiohttp.web.Application()
     app.router.add_get("/health", health_handler)
-    runner = aiohttp.web.AppRunner(app)
+    runner = aiohttp.web.AppRunner(app, access_log=None)
     await runner.setup()
     site = aiohttp.web.TCPSite(runner, "0.0.0.0", HEALTH_PORT)
     await site.start()
-    logger.info(f"Health endpoint listening on port {HEALTH_PORT}")
+    logger.debug(f"Health endpoint listening on port {HEALTH_PORT}")
     while True:
         await asyncio.sleep(3600)
 
