@@ -142,7 +142,7 @@ async def run_health_server():
     await runner.setup()
     site = aiohttp.web.TCPSite(runner, "0.0.0.0", HEALTH_PORT)
     await site.start()
-    logger.debug(f"Health endpoint listening on port {HEALTH_PORT}")
+    logger.info(f"Health endpoint listening on port {HEALTH_PORT}")
     while True:
         await asyncio.sleep(3600)
 
