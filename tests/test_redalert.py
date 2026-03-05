@@ -331,6 +331,7 @@ async def test_monitor_handles_mqtt_error(monkeypatch):
 
     # Patch aiohttp.ClientSession to a dummy async context manager
     class DummySession:
+        def __init__(self, *args, **kwargs): pass
         async def __aenter__(self):
             return self
         async def __aexit__(self, exc_type, exc, tb):
@@ -386,6 +387,7 @@ async def test_monitor_alert_deduplication(monkeypatch):
 
     # Mock aiohttp.ClientSession
     class DummySession:
+        def __init__(self, *args, **kwargs): pass
         async def __aenter__(self):
             return self
 
@@ -465,6 +467,7 @@ async def test_monitor_basic_functionality(monkeypatch):
 
     # Mock aiohttp.ClientSession
     class DummySession:
+        def __init__(self, *args, **kwargs): pass
         async def __aenter__(self):
             return self
 
@@ -517,6 +520,7 @@ def test_monitor_mqtt_error_branch(monkeypatch):
     monkeypatch.setattr(redalert.aiomqtt, 'MqttError', DummyMqttError)
     monkeypatch.setattr(redalert.aiomqtt, 'Client', lambda *a, **kw: FailingMqttClient())
     class DummySession:
+        def __init__(self, *args, **kwargs): pass
         async def __aenter__(self):
             return self
         async def __aexit__(self, exc_type, exc, tb):
@@ -540,6 +544,7 @@ def test_monitor_generic_exception_branch(monkeypatch):
             pass
     monkeypatch.setattr(redalert.aiomqtt, 'Client', lambda *a, **kw: FailingMqttClient())
     class DummySession:
+        def __init__(self, *args, **kwargs): pass
         async def __aenter__(self):
             return self
         async def __aexit__(self, exc_type, exc, tb):
@@ -554,6 +559,139 @@ def test_monitor_generic_exception_branch(monkeypatch):
         pass
     except Exception:
         pass
+
+@pytest.mark.asyncio
+async def test_health_endpoint_ok():
+    redalert.last_heartbeat = time.time()
+    request = MagicMock()
+    response = await redalert.health_handler(request)
+    assert response.status == 200
+    body = json.loads(response.body)
+    assert body["status"] == "ok"
+    assert body["last_heartbeat_ago"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_health_endpoint_frozen():
+    redalert.last_heartbeat = 0.0
+    request = MagicMock()
+    response = await redalert.health_handler(request)
+    assert response.status == 503
+    body = json.loads(response.body)
+    assert body["status"] == "frozen"
+
+
+@pytest.mark.asyncio
+async def test_health_endpoint_stale():
+    redalert.last_heartbeat = time.time() - 60
+    request = MagicMock()
+    response = await redalert.health_handler(request)
+    assert response.status == 503
+    body = json.loads(response.body)
+    assert body["status"] == "frozen"
+    assert body["last_heartbeat_ago"] >= 60
+
+
+@pytest.mark.asyncio
+async def test_fetch_alert_connection_error():
+    """Covers lines 106-108: general non-JSONDecodeError exception in fetch_alert."""
+    async def raise_error(*args, **kwargs):
+        raise ConnectionError("Connection failed")
+
+    session = AsyncMock()
+    session.get = raise_error
+    alert = await redalert.fetch_alert(session)
+    assert alert is None
+
+
+@pytest.mark.asyncio
+async def test_run_health_server(monkeypatch):
+    """Covers lines 139-147: run_health_server sets up app, runner, site and loops."""
+    mock_app = MagicMock()
+    mock_runner = AsyncMock()
+    mock_site = AsyncMock()
+
+    monkeypatch.setattr(redalert.aiohttp.web, 'Application', lambda: mock_app)
+    monkeypatch.setattr(redalert.aiohttp.web, 'AppRunner', lambda app: mock_runner)
+    monkeypatch.setattr(redalert.aiohttp.web, 'TCPSite', lambda runner, host, port: mock_site)
+
+    async def fake_sleep(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(asyncio, 'sleep', fake_sleep)
+
+    try:
+        await redalert.run_health_server()
+    except asyncio.CancelledError:
+        pass
+
+    mock_runner.setup.assert_called_once()
+    mock_site.start.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_monitor_cleanup_triggered(monkeypatch):
+    """Covers lines 174-175: cleanup_alerts() branch fires when 60 s have elapsed."""
+    redalert.alerts.clear()
+
+    async def mock_fetch_alert(session):
+        return None
+
+    monkeypatch.setattr(redalert, 'fetch_alert', mock_fetch_alert)
+
+    class MockMqttClient:
+        async def __aenter__(self): return AsyncMock()
+        async def __aexit__(self, *a): pass
+
+    monkeypatch.setattr(redalert.aiomqtt, 'Client', lambda *a, **kw: MockMqttClient())
+
+    class DummySession:
+        def __init__(self, *args, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+
+    monkeypatch.setattr(redalert.aiohttp, 'ClientSession', DummySession)
+
+    # First call sets last_cleanup = 0; every subsequent call returns 100 so
+    # the 60-second check triggers immediately on the first loop iteration.
+    call_count = 0
+    def mock_time():
+        nonlocal call_count
+        call_count += 1
+        return 0.0 if call_count == 1 else 100.0
+
+    monkeypatch.setattr(redalert.time, 'time', mock_time)
+
+    async def fake_sleep(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(asyncio, 'sleep', fake_sleep)
+
+    try:
+        await redalert.monitor()
+    except asyncio.CancelledError:
+        pass
+
+    # time.time() should have been called at least 4 times:
+    # last_cleanup assignment, check, cleanup_alerts(), last_cleanup update
+    assert call_count >= 4
+
+
+def test_main_entrypoint(monkeypatch):
+    """Covers lines 186-188: __main__ block defines main() and runs it."""
+    async def fake_gather(*coros, **kwargs):
+        for coro in coros:
+            if hasattr(coro, 'close'):
+                coro.close()
+
+    monkeypatch.setattr(asyncio, 'gather', fake_gather)
+
+    import runpy
+    runpy.run_path(
+        os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'redalert.py')),
+        run_name='__main__'
+    )
+
 
 def test_main_block(monkeypatch):
     # Patch monitor to avoid running the infinite loop

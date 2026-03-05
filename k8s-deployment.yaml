@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redalert
+  labels:
+    app: redalert
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redalert
+  template:
+    metadata:
+      labels:
+        app: redalert
+    spec:
+      containers:
+        - name: redalert
+          image: ghcr.io/techblog/redalert:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: MQTT_HOST
+              value: "mqtt.example.com"
+            - name: MQTT_PORT
+              value: "1883"
+            - name: MQTT_TOPIC
+              value: "/redalert"
+            - name: INCLUDE_TEST_ALERTS
+              value: "False"
+            - name: DEBUG
+              value: "False"
+            - name: HEALTH_PORT
+              value: "8080"
+            - name: MQTT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: redalert-mqtt-secret
+                  key: username
+            - name: MQTT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: redalert-mqtt-secret
+                  key: password
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            failureThreshold: 6
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: redalert-mqtt-secret
+type: Opaque
+stringData:
+  username: myuser
+  password: mypassword

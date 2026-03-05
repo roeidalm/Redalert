@@ -8,7 +8,7 @@ on:
 
 jobs:
   create-release:
-    runs-on: ubuntu-latest
+    runs-on: k3s-homelab
     permissions:
       contents: write
       pull-requests: write

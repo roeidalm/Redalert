@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import aiohttp
+import aiohttp.web
 import os
 import json
 import logging
@@ -38,6 +39,8 @@ passw = os.getenv('MQTT_PASS', 'password')
 MQTT_TOPIC = os.environ.get("MQTT_TOPIC", "/redalert")
 INCLUDE_TEST_ALERTS = os.getenv("INCLUDE_TEST_ALERTS", "False")
 IS_DEBUG = os.getenv("DEBUG", "False")
+HEALTH_PORT = int(os.getenv("HEALTH_PORT", 8080))
+HEALTH_THRESHOLD = 30  # seconds of silence before considered frozen
 logger.info(f"Monitoring alerts, sending to topic: {MQTT_TOPIC}")
 
 _headers = {
@@ -59,6 +62,7 @@ DEBUG_ALERT_DATA = {
 # Replace alerts set with a dict for time-based cleanup
 alerts = {}
 ALERT_TTL = 3600  # 1 hour in seconds
+last_heartbeat: float = 0.0
 
 
 def is_test_alert(alert: AlertObject) -> bool:
@@ -97,7 +101,7 @@ async def fetch_alert(session: aiohttp.ClientSession) -> Optional[AlertObject]:
             logger.debug("Alert data successfully parsed.")
             return alert_object
     except json.JSONDecodeError as jde:
-        logger.error(f"Failed to parse JSON: {jde}, raw data: {await response.text()}...")
+        logger.error(f"Failed to parse JSON: {jde}")
         return None
     except Exception as ex:
         logger.error(f"Exception during fetch_alert: {ex}")
@@ -120,8 +124,33 @@ def cleanup_alerts():
     for aid in to_remove:
         del alerts[aid]
 
+async def health_handler(request):
+    age = time.time() - last_heartbeat
+    if last_heartbeat == 0 or age > HEALTH_THRESHOLD:
+        return aiohttp.web.json_response(
+            {"status": "frozen", "last_heartbeat_ago": round(age, 1)}, status=503
+        )
+    return aiohttp.web.json_response(
+        {"status": "ok", "last_heartbeat_ago": round(age, 1)}, status=200
+    )
+
+
+async def run_health_server():
+    app = aiohttp.web.Application()
+    app.router.add_get("/health", health_handler)
+    runner = aiohttp.web.AppRunner(app)
+    await runner.setup()
+    site = aiohttp.web.TCPSite(runner, "0.0.0.0", HEALTH_PORT)
+    await site.start()
+    logger.info(f"Health endpoint listening on port {HEALTH_PORT}")
+    while True:
+        await asyncio.sleep(3600)
+
+
 async def monitor():
-    async with aiohttp.ClientSession() as session:
+    global last_heartbeat
+    timeout = aiohttp.ClientTimeout(sock_connect=5, sock_read=10)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         reconnect_interval = 5
         last_cleanup = time.time()
         while True:
@@ -131,6 +160,7 @@ async def monitor():
                     port=port,
                     username=user,
                     password=passw,
+                    timeout=10,
                 ) as mqtt_client:
                     logger.info("Connected to MQTT broker.")
                     while True:
@@ -144,6 +174,7 @@ async def monitor():
                             cleanup_alerts()
                             last_cleanup = time.time()
                         await asyncio.sleep(1)
+                        last_heartbeat = time.time()
             except aiomqtt.MqttError as me:
                 logger.error(f"MQTT error: {me}. Reconnecting in {reconnect_interval} seconds...")
                 await asyncio.sleep(reconnect_interval)
@@ -152,4 +183,6 @@ async def monitor():
                 await asyncio.sleep(reconnect_interval)
 
 if __name__ == '__main__':
-    asyncio.run(monitor())
+    async def main():
+        await asyncio.gather(monitor(), run_health_server())
+    asyncio.run(main())
