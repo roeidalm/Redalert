@@ -705,3 +705,486 @@ def test_main_block(monkeypatch):
         # Simulate __main__
         if hasattr(ra, '__name__'):
             assert True
+
+
+# ====== Area endpoint tests ======
+
+
+def test_area_file_is_fresh_no_file(monkeypatch):
+    monkeypatch.setattr(redalert, 'AREA_POLYGONS_FILE', '/tmp/nonexistent_area_test.json')
+    assert redalert._area_file_is_fresh() is False
+
+
+def test_area_file_is_fresh_stale(monkeypatch, tmp_path):
+    f = tmp_path / "area_polygons.json"
+    f.write_text("{}")
+    # Set mtime to 25 hours ago
+    old_time = time.time() - 90000
+    os.utime(str(f), (old_time, old_time))
+    monkeypatch.setattr(redalert, 'AREA_POLYGONS_FILE', str(f))
+    assert redalert._area_file_is_fresh() is False
+
+
+def test_area_file_is_fresh_recent(monkeypatch, tmp_path):
+    f = tmp_path / "area_polygons.json"
+    f.write_text("{}")
+    monkeypatch.setattr(redalert, 'AREA_POLYGONS_FILE', str(f))
+    assert redalert._area_file_is_fresh() is True
+
+
+def test_build_bbox_index():
+    data = {
+        "תל אביב": {
+            "migun_time": 90,
+            "polygon": [[32.0, 34.7], [32.1, 34.7], [32.1, 34.8], [32.0, 34.8]]
+        }
+    }
+    idx = redalert.build_bbox_index(data)
+    assert "תל אביב" in idx
+    assert idx["תל אביב"]["migun_time"] == 90
+    bbox = idx["תל אביב"]["bbox"]
+    assert bbox == (32.0, 32.1, 34.7, 34.8)
+
+
+def test_build_bbox_index_empty():
+    assert redalert.build_bbox_index({}) == {}
+
+
+def test_build_bbox_index_skips_empty_polygon():
+    data = {"city": {"migun_time": 0, "polygon": []}}
+    assert redalert.build_bbox_index(data) == {}
+
+
+def test_lookup_area_hit(monkeypatch, tmp_path):
+    # Square polygon around (32.05, 34.75)
+    area_data = {
+        "תל אביב": {
+            "migun_time": 90,
+            "polygon": [[32.0, 34.7], [32.1, 34.7], [32.1, 34.8], [32.0, 34.8]]
+        }
+    }
+    f = tmp_path / "area_polygons.json"
+    f.write_text(json.dumps(area_data, ensure_ascii=False))
+    monkeypatch.setattr(redalert, 'AREA_POLYGONS_FILE', str(f))
+    monkeypatch.setattr(redalert, 'area_bbox_index', redalert.build_bbox_index(area_data))
+
+    result = redalert.lookup_area(32.05, 34.75)
+    assert result is not None
+    assert result["area"] == "תל אביב"
+    assert result["migun_time"] == 90
+
+
+def test_lookup_area_miss(monkeypatch, tmp_path):
+    area_data = {
+        "תל אביב": {
+            "migun_time": 90,
+            "polygon": [[32.0, 34.7], [32.1, 34.7], [32.1, 34.8], [32.0, 34.8]]
+        }
+    }
+    f = tmp_path / "area_polygons.json"
+    f.write_text(json.dumps(area_data, ensure_ascii=False))
+    monkeypatch.setattr(redalert, 'AREA_POLYGONS_FILE', str(f))
+    monkeypatch.setattr(redalert, 'area_bbox_index', redalert.build_bbox_index(area_data))
+
+    result = redalert.lookup_area(33.0, 35.0)
+    assert result is None
+
+
+def test_lookup_area_bbox_hit_polygon_miss(monkeypatch, tmp_path):
+    # Triangle polygon — point in bbox corner but outside triangle
+    area_data = {
+        "triangle": {
+            "migun_time": 60,
+            "polygon": [[32.0, 34.7], [32.1, 34.8], [32.0, 34.8]]
+        }
+    }
+    f = tmp_path / "area_polygons.json"
+    f.write_text(json.dumps(area_data, ensure_ascii=False))
+    monkeypatch.setattr(redalert, 'AREA_POLYGONS_FILE', str(f))
+    monkeypatch.setattr(redalert, 'area_bbox_index', redalert.build_bbox_index(area_data))
+
+    # Point at (32.09, 34.71) is inside bbox but outside the triangle
+    result = redalert.lookup_area(32.09, 34.71)
+    assert result is None
+
+
+def test_lookup_area_no_candidates(monkeypatch):
+    monkeypatch.setattr(redalert, 'area_bbox_index', {})
+    result = redalert.lookup_area(32.05, 34.75)
+    assert result is None
+
+
+def test_lookup_area_file_read_error(monkeypatch):
+    monkeypatch.setattr(redalert, 'AREA_POLYGONS_FILE', '/tmp/nonexistent.json')
+    monkeypatch.setattr(redalert, 'area_bbox_index', {
+        "city": {"migun_time": 0, "bbox": (30.0, 35.0, 34.0, 36.0)}
+    })
+    result = redalert.lookup_area(32.0, 35.0)
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_area_handler_success(monkeypatch):
+    monkeypatch.setattr(redalert, 'area_data_loaded', True)
+    monkeypatch.setattr(redalert, 'lookup_area', lambda lat, lon: {"area": "תל אביב", "migun_time": 90})
+    request = MagicMock()
+    request.query = {"lat": "32.0853", "lon": "34.7818"}
+    response = await redalert.area_handler(request)
+    assert response.status == 200
+    body = json.loads(response.body)
+    assert body["area"] == "תל אביב"
+    assert body["migun_time"] == 90
+
+
+@pytest.mark.asyncio
+async def test_area_handler_not_found(monkeypatch):
+    monkeypatch.setattr(redalert, 'area_data_loaded', True)
+    monkeypatch.setattr(redalert, 'lookup_area', lambda lat, lon: None)
+    request = MagicMock()
+    request.query = {"lat": "32.0853", "lon": "34.7818"}
+    response = await redalert.area_handler(request)
+    assert response.status == 404
+    body = json.loads(response.body)
+    assert "No alert area found" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_area_handler_not_loaded(monkeypatch):
+    monkeypatch.setattr(redalert, 'area_data_loaded', False)
+    request = MagicMock()
+    request.query = {"lat": "32.0853", "lon": "34.7818"}
+    response = await redalert.area_handler(request)
+    assert response.status == 503
+    body = json.loads(response.body)
+    assert "not loaded" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_area_handler_missing_params():
+    request = MagicMock()
+    request.query = {}
+    response = await redalert.area_handler(request)
+    assert response.status == 400
+
+
+@pytest.mark.asyncio
+async def test_area_handler_invalid_params():
+    request = MagicMock()
+    request.query = {"lat": "abc", "lon": "xyz"}
+    response = await redalert.area_handler(request)
+    assert response.status == 400
+
+
+class AsyncJsonContextResponse:
+    def __init__(self, status, json_value):
+        self.status = status
+        self._json_value = json_value
+    async def __aenter__(self):
+        return self
+    async def __aexit__(self, exc_type, exc, tb):
+        pass
+    async def json(self, *args, **kwargs):
+        return self._json_value
+
+
+@pytest.mark.asyncio
+async def test_fetch_area_polygons_success():
+    cities = [
+        {"label": "תל אביב", "migun_time": "90"},
+        {"label": "חיפה", "migun_time": "60"}
+    ]
+    segments = {
+        "segments": {
+            "1": {"id": 1, "name": "תל אביב", "centerX": 34.78, "centerY": 32.08},
+            "2": {"id": 2, "name": "חיפה", "centerX": 34.99, "centerY": 32.82}
+        }
+    }
+    polygon_ta = {"polygonPointList": [[[32.0, 34.7], [32.1, 34.7], [32.1, 34.8], [32.0, 34.8]]]}
+    polygon_haifa = {"polygonPointList": [[[32.8, 34.9], [32.9, 34.9], [32.9, 35.0], [32.8, 35.0]]]}
+
+    call_count = 0
+    async def mock_get(url, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if "GetCitiesMix" in url:
+            return AsyncJsonContextResponse(200, cities)
+        elif "segments" in url:
+            return AsyncJsonContextResponse(200, segments)
+        elif "id=1" in url:
+            return AsyncJsonContextResponse(200, polygon_ta)
+        elif "id=2" in url:
+            return AsyncJsonContextResponse(200, polygon_haifa)
+        return AsyncJsonContextResponse(404, {})
+
+    session = AsyncMock()
+    session.get = mock_get
+
+    result = await redalert.fetch_area_polygons(session)
+    assert "תל אביב" in result
+    assert "חיפה" in result
+    assert result["תל אביב"]["migun_time"] == 90
+    assert len(result["תל אביב"]["polygon"]) == 4
+
+
+@pytest.mark.asyncio
+async def test_fetch_area_polygons_cities_failure():
+    async def mock_get(url, **kwargs):
+        return AsyncJsonContextResponse(500, None)
+
+    session = AsyncMock()
+    session.get = mock_get
+    result = await redalert.fetch_area_polygons(session)
+    assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_fetch_area_polygons_segments_failure():
+    cities = [{"label": "תל אביב", "migun_time": "90"}]
+    call_count = 0
+    async def mock_get(url, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if "GetCitiesMix" in url:
+            return AsyncJsonContextResponse(200, cities)
+        return AsyncJsonContextResponse(500, None)
+
+    session = AsyncMock()
+    session.get = mock_get
+    result = await redalert.fetch_area_polygons(session)
+    assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_fetch_area_polygons_exception():
+    session = AsyncMock()
+    async def raise_error(*args, **kwargs):
+        raise ConnectionError("Network error")
+    session.get = raise_error
+    result = await redalert.fetch_area_polygons(session)
+    assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_load_area_data_from_fresh_file(monkeypatch, tmp_path):
+    area_data = {
+        "תל אביב": {
+            "migun_time": 90,
+            "polygon": [[32.0, 34.7], [32.1, 34.7], [32.1, 34.8], [32.0, 34.8]]
+        }
+    }
+    f = tmp_path / "area_polygons.json"
+    f.write_text(json.dumps(area_data, ensure_ascii=False))
+    monkeypatch.setattr(redalert, 'AREA_POLYGONS_FILE', str(f))
+    monkeypatch.setattr(redalert, 'area_data_loaded', False)
+    monkeypatch.setattr(redalert, 'area_bbox_index', {})
+
+    await redalert.load_area_data()
+    assert redalert.area_data_loaded is True
+    assert "תל אביב" in redalert.area_bbox_index
+
+
+@pytest.mark.asyncio
+async def test_load_area_data_fetch_and_save(monkeypatch, tmp_path):
+    f = tmp_path / "area_polygons.json"
+    monkeypatch.setattr(redalert, 'AREA_POLYGONS_FILE', str(f))
+    monkeypatch.setattr(redalert, 'area_data_loaded', False)
+    monkeypatch.setattr(redalert, 'area_bbox_index', {})
+
+    test_data = {
+        "חיפה": {
+            "migun_time": 60,
+            "polygon": [[32.8, 34.9], [32.9, 34.9], [32.9, 35.0], [32.8, 35.0]]
+        }
+    }
+
+    async def mock_fetch(session):
+        return test_data
+    monkeypatch.setattr(redalert, 'fetch_area_polygons', mock_fetch)
+
+    await redalert.load_area_data()
+    assert redalert.area_data_loaded is True
+    assert "חיפה" in redalert.area_bbox_index
+    assert f.exists()
+
+
+@pytest.mark.asyncio
+async def test_load_area_data_fetch_fails_stale_file(monkeypatch, tmp_path):
+    area_data = {
+        "old_city": {
+            "migun_time": 30,
+            "polygon": [[31.0, 34.0], [31.1, 34.0], [31.1, 34.1], [31.0, 34.1]]
+        }
+    }
+    f = tmp_path / "area_polygons.json"
+    f.write_text(json.dumps(area_data, ensure_ascii=False))
+    # Make file stale
+    old_time = time.time() - 90000
+    os.utime(str(f), (old_time, old_time))
+    monkeypatch.setattr(redalert, 'AREA_POLYGONS_FILE', str(f))
+    monkeypatch.setattr(redalert, 'area_data_loaded', False)
+    monkeypatch.setattr(redalert, 'area_bbox_index', {})
+
+    async def mock_fetch(session):
+        return {}
+    monkeypatch.setattr(redalert, 'fetch_area_polygons', mock_fetch)
+
+    await redalert.load_area_data()
+    assert redalert.area_data_loaded is True
+    assert "old_city" in redalert.area_bbox_index
+
+
+@pytest.mark.asyncio
+async def test_load_area_data_fetch_fails_no_file(monkeypatch, tmp_path):
+    f = tmp_path / "nonexistent_area.json"
+    monkeypatch.setattr(redalert, 'AREA_POLYGONS_FILE', str(f))
+    monkeypatch.setattr(redalert, 'area_data_loaded', False)
+    monkeypatch.setattr(redalert, 'area_bbox_index', {})
+
+    async def mock_fetch(session):
+        return {}
+    monkeypatch.setattr(redalert, 'fetch_area_polygons', mock_fetch)
+
+    await redalert.load_area_data()
+    assert redalert.area_data_loaded is False
+
+
+@pytest.mark.asyncio
+async def test_area_refresh_loop(monkeypatch):
+    call_count = 0
+    async def mock_load():
+        nonlocal call_count
+        call_count += 1
+
+    monkeypatch.setattr(redalert, 'load_area_data', mock_load)
+
+    sleep_count = 0
+    async def fake_sleep(*args, **kwargs):
+        nonlocal sleep_count
+        sleep_count += 1
+        if sleep_count >= 2:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(asyncio, 'sleep', fake_sleep)
+
+    try:
+        await redalert.area_refresh_loop()
+    except asyncio.CancelledError:
+        pass
+
+    assert call_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_area_refresh_loop_handles_exception(monkeypatch):
+    call_count = 0
+    async def mock_load():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("transient error")
+
+    monkeypatch.setattr(redalert, 'load_area_data', mock_load)
+
+    sleep_count = 0
+    async def fake_sleep(*args, **kwargs):
+        nonlocal sleep_count
+        sleep_count += 1
+        if sleep_count >= 3:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(asyncio, 'sleep', fake_sleep)
+
+    try:
+        await redalert.area_refresh_loop()
+    except asyncio.CancelledError:
+        pass
+
+    assert call_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_run_health_server_registers_area_route(monkeypatch):
+    mock_app = MagicMock()
+    mock_runner = AsyncMock()
+    mock_site = AsyncMock()
+
+    monkeypatch.setattr(redalert.aiohttp.web, 'Application', lambda: mock_app)
+    monkeypatch.setattr(redalert.aiohttp.web, 'AppRunner', lambda *a, **kw: mock_runner)
+    monkeypatch.setattr(redalert.aiohttp.web, 'TCPSite', lambda runner, host, port: mock_site)
+
+    async def fake_sleep(*args, **kwargs):
+        raise asyncio.CancelledError()
+    monkeypatch.setattr(asyncio, 'sleep', fake_sleep)
+
+    try:
+        await redalert.run_health_server()
+    except asyncio.CancelledError:
+        pass
+
+    # Verify both /health and /area routes were registered
+    add_get_calls = mock_app.router.add_get.call_args_list
+    routes = [call[0][0] for call in add_get_calls]
+    assert "/health" in routes
+    assert "/area" in routes
+
+
+@pytest.mark.asyncio
+async def test_fetch_area_polygons_polygon_fetch_failure():
+    """Test that individual polygon fetch failures are handled gracefully."""
+    cities = [{"label": "תל אביב", "migun_time": "90"}]
+    segments = {
+        "segments": {
+            "1": {"id": 1, "name": "תל אביב", "centerX": 34.78, "centerY": 32.08}
+        }
+    }
+
+    async def mock_get(url, **kwargs):
+        if "GetCitiesMix" in url:
+            return AsyncJsonContextResponse(200, cities)
+        elif "segments" in url:
+            return AsyncJsonContextResponse(200, segments)
+        # Polygon fetch fails
+        return AsyncJsonContextResponse(500, None)
+
+    session = AsyncMock()
+    session.get = mock_get
+    result = await redalert.fetch_area_polygons(session)
+    # City not in result because polygon fetch failed
+    assert "תל אביב" not in result
+
+
+@pytest.mark.asyncio
+async def test_fetch_area_polygons_no_matches():
+    """Test when no cities match any segments."""
+    cities = [{"label": "nonexistent_city", "migun_time": "90"}]
+    segments = {
+        "segments": {
+            "1": {"id": 1, "name": "other_city", "centerX": 34.78, "centerY": 32.08}
+        }
+    }
+
+    async def mock_get(url, **kwargs):
+        if "GetCitiesMix" in url:
+            return AsyncJsonContextResponse(200, cities)
+        elif "segments" in url:
+            return AsyncJsonContextResponse(200, segments)
+        return AsyncJsonContextResponse(404, {})
+
+    session = AsyncMock()
+    session.get = mock_get
+    result = await redalert.fetch_area_polygons(session)
+    assert result == {}
+
+
+def test_lookup_area_polygon_too_few_points(monkeypatch, tmp_path):
+    """Test polygon with fewer than 3 points is skipped."""
+    area_data = {
+        "tiny": {"migun_time": 10, "polygon": [[32.0, 34.7], [32.1, 34.8]]}
+    }
+    f = tmp_path / "area_polygons.json"
+    f.write_text(json.dumps(area_data, ensure_ascii=False))
+    monkeypatch.setattr(redalert, 'AREA_POLYGONS_FILE', str(f))
+    monkeypatch.setattr(redalert, 'area_bbox_index', redalert.build_bbox_index(area_data))
+
+    result = redalert.lookup_area(32.05, 34.75)
+    assert result is None
