@@ -2,6 +2,8 @@ FROM python:3.12-alpine
 
 RUN rm -rf /var/cache/apk/*
 
+RUN apk add --no-cache geos
+
 #install python dependencies from requirements.txt
 COPY requirements.txt /opt/redalert/
 RUN pip install -r /opt/redalert/requirements.txt --no-cache-dir

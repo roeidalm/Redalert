@@ -8,8 +8,10 @@ import json
 import logging
 import aiomqtt
 import time
+import pathlib
 from dataclasses import dataclass, asdict
 from typing import List, Optional
+from shapely.geometry import Point, Polygon
 
 @dataclass
 class AlertObject:
@@ -63,6 +65,18 @@ DEBUG_ALERT_DATA = {
 alerts = {}
 ALERT_TTL = 3600  # 1 hour in seconds
 last_heartbeat: float = 0.0
+
+# Area endpoint configuration
+AREA_POLYGONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "area_polygons.json")
+AREA_REFRESH_INTERVAL = 86400  # 24 hours in seconds
+AREA_FETCH_CONCURRENCY = 20
+OREF_CITIES_URL = "https://alerts-history.oref.org.il/Shared/Ajax/GetCitiesMix.aspx"
+MESER_SEGMENTS_URL = "https://dist-android.meser-hadash.org.il/smart-dist/services/anonymous/segments/android?instance=1544803905&locale=iw_IL"
+MESER_POLYGON_URL_TEMPLATE = "https://services.meser-hadash.org.il/smart-dist/services/anonymous/polygon/id/android?instance=1544803905&id={segment_id}"
+
+# In-memory bounding box index: {"city_name": {"migun_time": int, "bbox": (min_lat, max_lat, min_lon, max_lon)}}
+area_bbox_index: dict = {}
+area_data_loaded: bool = False
 
 
 def is_test_alert(alert: AlertObject) -> bool:
@@ -124,6 +138,229 @@ def cleanup_alerts():
     for aid in to_remove:
         del alerts[aid]
 
+
+def _area_file_is_fresh() -> bool:
+    p = pathlib.Path(AREA_POLYGONS_FILE)
+    if not p.exists():
+        return False
+    age = time.time() - p.stat().st_mtime
+    return age < AREA_REFRESH_INTERVAL
+
+
+async def fetch_area_polygons(session: aiohttp.ClientSession) -> dict:
+    logger.info("Starting area polygon data fetch...")
+    try:
+        # Step 1: Fetch city list from Pikud Haoref
+        async with await session.get(OREF_CITIES_URL) as resp:
+            if resp.status != 200:
+                logger.error(f"Failed to fetch cities: HTTP {resp.status}")
+                return {}
+            cities_data = await resp.json(content_type=None)
+
+        city_map = {}
+        for city in cities_data:
+            label = city.get("label", "").strip()
+            migun_time = city.get("migun_time", "0")
+            if label:
+                city_map[label] = int(migun_time) if str(migun_time).isdigit() else 0
+
+        logger.info(f"Fetched {len(city_map)} cities from Oref")
+
+        # Step 2: Fetch segments from meser-hadash
+        async with await session.get(MESER_SEGMENTS_URL) as resp:
+            if resp.status != 200:
+                logger.error(f"Failed to fetch segments: HTTP {resp.status}")
+                return {}
+            segments_data = await resp.json(content_type=None)
+
+        segments = segments_data.get("segments", {})
+        # Build name -> segment_id mapping
+        segment_by_name = {}
+        for seg_id, seg in segments.items():
+            name = seg.get("name", "").strip()
+            if name:
+                segment_by_name[name] = seg.get("id", seg_id)
+
+        # Step 3: Match cities to segments and fetch polygons
+        matched = []
+        for city_name, migun_time in city_map.items():
+            if city_name in segment_by_name:
+                matched.append((city_name, migun_time, segment_by_name[city_name]))
+
+        logger.info(f"Matched {len(matched)} cities to segments")
+
+        result = {}
+        sem = asyncio.Semaphore(AREA_FETCH_CONCURRENCY)
+
+        async def fetch_polygon(city_name, migun_time, segment_id):
+            async with sem:
+                try:
+                    poly_url = MESER_POLYGON_URL_TEMPLATE.format(segment_id=segment_id)
+                    async with await session.get(poly_url) as resp:
+                        if resp.status != 200:
+                            return
+                        poly_data = await resp.json(content_type=None)
+                    point_list = poly_data.get("polygonPointList", [])
+                    if point_list and len(point_list) > 0:
+                        polygon = point_list[0] if isinstance(point_list[0][0], list) else point_list
+                        result[city_name] = {"migun_time": migun_time, "polygon": polygon}
+                except Exception as e:
+                    logger.warning(f"Failed to fetch polygon for {city_name}: {e}")
+
+        tasks = [fetch_polygon(cn, mt, sid) for cn, mt, sid in matched]
+        await asyncio.gather(*tasks)
+
+        logger.info(f"Area polygon fetch complete. Total areas: {len(result)}")
+        return result
+    except Exception as e:
+        logger.error(f"Error fetching area polygons: {e}")
+        return {}
+
+
+def build_bbox_index(area_data: dict) -> dict:
+    index = {}
+    for name, data in area_data.items():
+        polygon = data.get("polygon", [])
+        if not polygon:
+            continue
+        lats = [p[0] for p in polygon]
+        lons = [p[1] for p in polygon]
+        index[name] = {
+            "migun_time": data.get("migun_time", 0),
+            "bbox": (min(lats), max(lats), min(lons), max(lons))
+        }
+    return index
+
+
+async def load_area_data():
+    global area_bbox_index, area_data_loaded
+
+    if _area_file_is_fresh():
+        logger.info("Loading area data from fresh file...")
+        try:
+            with open(AREA_POLYGONS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            area_bbox_index = build_bbox_index(data)
+            area_data_loaded = True
+            logger.info(f"Loaded {len(area_bbox_index)} areas from file")
+            return
+        except Exception as e:
+            logger.error(f"Failed to load area file: {e}")
+
+    # File missing or stale — fetch fresh data
+    logger.info("Fetching fresh area data...")
+    timeout = aiohttp.ClientTimeout(sock_connect=10, sock_read=30)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            data = await fetch_area_polygons(session)
+    except Exception as e:
+        logger.error(f"Failed to create session for area fetch: {e}")
+        data = {}
+
+    if data:
+        try:
+            with open(AREA_POLYGONS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False)
+            area_bbox_index = build_bbox_index(data)
+            area_data_loaded = True
+            logger.info(f"Saved and indexed {len(area_bbox_index)} areas")
+            return
+        except Exception as e:
+            logger.error(f"Failed to save area file: {e}")
+
+    # Fetch failed — try stale file as fallback
+    if pathlib.Path(AREA_POLYGONS_FILE).exists():
+        logger.warning("Fetch failed, falling back to stale area file")
+        try:
+            with open(AREA_POLYGONS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            area_bbox_index = build_bbox_index(data)
+            area_data_loaded = True
+            logger.info(f"Loaded {len(area_bbox_index)} areas from stale file")
+            return
+        except Exception as e:
+            logger.error(f"Failed to load stale area file: {e}")
+
+    logger.error("No area data available")
+    area_data_loaded = False
+
+
+async def area_refresh_loop():
+    while True:
+        try:
+            await asyncio.sleep(AREA_REFRESH_INTERVAL)
+            await load_area_data()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Error in area refresh loop: {e}")
+
+
+def lookup_area(lat: float, lon: float) -> Optional[dict]:
+    # Pre-filter candidates using bounding box
+    candidates = []
+    for name, info in area_bbox_index.items():
+        min_lat, max_lat, min_lon, max_lon = info["bbox"]
+        if min_lat <= lat <= max_lat and min_lon <= lon <= max_lon:
+            candidates.append((name, info["migun_time"]))
+
+    if not candidates:
+        return None
+
+    # Load polygons from file and check containment
+    try:
+        with open(AREA_POLYGONS_FILE, 'r', encoding='utf-8') as f:
+            all_data = json.load(f)
+    except Exception:
+        return None
+
+    point = Point(lon, lat)
+    for name, migun_time in candidates:
+        area_entry = all_data.get(name)
+        if not area_entry:
+            continue
+        poly_coords = area_entry.get("polygon", [])
+        if len(poly_coords) < 3:
+            continue
+        # File stores [lat, lon], shapely needs (x=lon, y=lat)
+        shapely_coords = [(p[1], p[0]) for p in poly_coords]
+        polygon = Polygon(shapely_coords)
+        if polygon.contains(point):
+            return {"area": name, "migun_time": migun_time}
+
+    return None
+
+
+async def area_handler(request):
+    lat_str = request.query.get("lat")
+    lon_str = request.query.get("lon")
+
+    if not lat_str or not lon_str:
+        return aiohttp.web.json_response(
+            {"error": "Missing or invalid lat/lon query parameters"}, status=400
+        )
+    try:
+        lat = float(lat_str)
+        lon = float(lon_str)
+    except ValueError:
+        return aiohttp.web.json_response(
+            {"error": "Missing or invalid lat/lon query parameters"}, status=400
+        )
+
+    if not area_data_loaded:
+        return aiohttp.web.json_response(
+            {"error": "Area data not loaded yet"}, status=503
+        )
+
+    result = lookup_area(lat, lon)
+    if result:
+        return aiohttp.web.json_response(result, status=200)
+
+    return aiohttp.web.json_response(
+        {"error": "No alert area found for given coordinates"}, status=404
+    )
+
+
 async def health_handler(request):
     age = time.time() - last_heartbeat
     if last_heartbeat == 0 or age > HEALTH_THRESHOLD:
@@ -138,6 +375,7 @@ async def health_handler(request):
 async def run_health_server():
     app = aiohttp.web.Application()
     app.router.add_get("/health", health_handler)
+    app.router.add_get("/area", area_handler)
     runner = aiohttp.web.AppRunner(app, access_log=None)
     await runner.setup()
     site = aiohttp.web.TCPSite(runner, "0.0.0.0", HEALTH_PORT)
@@ -184,5 +422,6 @@ async def monitor():
 
 if __name__ == '__main__':
     async def main():
-        await asyncio.gather(monitor(), run_health_server())
+        await load_area_data()
+        await asyncio.gather(monitor(), run_health_server(), area_refresh_loop())
     asyncio.run(main())
