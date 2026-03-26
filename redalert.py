@@ -387,7 +387,7 @@ async def run_health_server():
 
 async def monitor():
     global last_heartbeat
-    poll_interval = 0.5  # seconds between poll cycles
+    poll_interval = 1  # seconds between poll cycles
     fetch_timeout = 4  # max seconds for a single fetch attempt
     timeout = aiohttp.ClientTimeout(sock_connect=3, sock_read=3)
     connector = aiohttp.TCPConnector(
