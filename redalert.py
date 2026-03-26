@@ -387,8 +387,15 @@ async def run_health_server():
 
 async def monitor():
     global last_heartbeat
-    timeout = aiohttp.ClientTimeout(sock_connect=5, sock_read=10)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    poll_interval = 1  # seconds between poll cycles
+    fetch_timeout = 4  # max seconds for a single fetch attempt
+    timeout = aiohttp.ClientTimeout(sock_connect=3, sock_read=3)
+    connector = aiohttp.TCPConnector(
+        limit=5,
+        ttl_dns_cache=60,
+        enable_cleanup_closed=True,
+    )
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         reconnect_interval = 5
         last_cleanup = time.time()
         while True:
@@ -402,7 +409,14 @@ async def monitor():
                 ) as mqtt_client:
                     logger.info("Connected to MQTT broker.")
                     while True:
-                        alert = await fetch_alert(session)
+                        cycle_start = time.monotonic()
+                        try:
+                            alert = await asyncio.wait_for(
+                                fetch_alert(session), timeout=fetch_timeout
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(f"fetch_alert timed out after {fetch_timeout}s")
+                            alert = None
                         if alert and alert.id not in alerts and not is_test_alert(alert):
                             alerts[alert.id] = time.time()
                             logger.info(f"New alert: {alert.raw_data.replace(chr(10), '').replace(chr(13), '').replace('  ', ' ')}")
@@ -411,7 +425,11 @@ async def monitor():
                         if time.time() - last_cleanup > 60:
                             cleanup_alerts()
                             last_cleanup = time.time()
-                        await asyncio.sleep(1)
+                        # Fixed-rate polling: sleep only the remaining time
+                        elapsed = time.monotonic() - cycle_start
+                        remaining = poll_interval - elapsed
+                        if remaining > 0:
+                            await asyncio.sleep(remaining)
                         last_heartbeat = time.time()
             except aiomqtt.MqttError as me:
                 logger.error(f"MQTT error: {me}. Reconnecting in {reconnect_interval} seconds...")
