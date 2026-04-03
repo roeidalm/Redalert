@@ -43,6 +43,7 @@ INCLUDE_TEST_ALERTS = os.getenv("INCLUDE_TEST_ALERTS", "False")
 IS_DEBUG = os.getenv("DEBUG", "False")
 HEALTH_PORT = int(os.getenv("HEALTH_PORT", 8080))
 HEALTH_THRESHOLD = 30  # seconds of silence before considered frozen
+KEEPALIVE_INTERVAL = int(os.getenv("KEEPALIVE_INTERVAL", 300))  # default 5 min
 logger.info(f"Monitoring alerts, sending to topic: {MQTT_TOPIC}")
 
 _headers = {
@@ -65,6 +66,8 @@ DEBUG_ALERT_DATA = {
 alerts = {}
 ALERT_TTL = 3600  # 1 hour in seconds
 last_heartbeat: float = 0.0
+last_successful_fetch: float = 0.0
+last_mqtt_success: float = 0.0
 
 # Area endpoint configuration
 AREA_POLYGONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "area_polygons.json")
@@ -84,12 +87,14 @@ def is_test_alert(alert: AlertObject) -> bool:
 
 
 async def fetch_alert(session: aiohttp.ClientSession) -> Optional[AlertObject]:
+    global last_successful_fetch
     try:
         async with await session.get(url, headers=_headers) as response:
             if response.status != 200:
                 logger.warning(f"Failed to fetch alerts: HTTP {response.status}")
                 return None
 
+            last_successful_fetch = time.time()
             alert_data = await response.text(encoding='utf-8-sig')
             alert_data = alert_data.replace('\x00', '').strip()
             
@@ -123,11 +128,13 @@ async def fetch_alert(session: aiohttp.ClientSession) -> Optional[AlertObject]:
 
 
 async def publish_alert(mqtt_client: aiomqtt.Client, alert: AlertObject):
+    global last_mqtt_success
     try:
         # Publish the data section
         await mqtt_client.publish(f"{MQTT_TOPIC}/cat/{alert.cat}", json.dumps({"title": alert.title, "data": alert.data, "desc": alert.desc}, ensure_ascii=False), qos=0)
         # Publish the full raw alert
         await mqtt_client.publish(f"{MQTT_TOPIC}/raw_data", alert.raw_data, qos=0)
+        last_mqtt_success = time.time()
         logger.info("Alert published to MQTT topics.")
     except Exception as e:
         logger.error(f"Failed to publish alert to MQTT: {e}")
@@ -362,10 +369,22 @@ async def area_handler(request):
 
 
 async def health_handler(request):
-    age = time.time() - last_heartbeat
+    now = time.time()
+    age = now - last_heartbeat
     if last_heartbeat == 0 or age > HEALTH_THRESHOLD:
         return aiohttp.web.json_response(
             {"status": "frozen", "last_heartbeat_ago": round(age, 1)}, status=503
+        )
+    # Check MQTT health — allow startup grace period (KEEPALIVE_INTERVAL + 60s)
+    mqtt_grace = KEEPALIVE_INTERVAL + 60
+    mqtt_age = now - last_mqtt_success
+    if last_mqtt_success == 0 and age > mqtt_grace:
+        return aiohttp.web.json_response(
+            {"status": "mqtt_stale", "last_heartbeat_ago": round(age, 1), "last_mqtt_ago": None}, status=503
+        )
+    if last_mqtt_success > 0 and mqtt_age > mqtt_grace:
+        return aiohttp.web.json_response(
+            {"status": "mqtt_stale", "last_heartbeat_ago": round(age, 1), "last_mqtt_ago": round(mqtt_age, 1)}, status=503
         )
     return aiohttp.web.json_response(
         {"status": "ok", "last_heartbeat_ago": round(age, 1)}, status=200
@@ -408,6 +427,8 @@ async def monitor():
                     timeout=10,
                 ) as mqtt_client:
                     logger.info("Connected to MQTT broker.")
+                    start_time = time.time()
+                    last_keepalive = start_time
                     while True:
                         cycle_start = time.monotonic()
                         try:
@@ -431,6 +452,22 @@ async def monitor():
                         if remaining > 0:
                             await asyncio.sleep(remaining)
                         last_heartbeat = time.time()
+                        # Keep-alive publish
+                        if time.time() - last_keepalive >= KEEPALIVE_INTERVAL:
+                            await mqtt_client.publish(
+                                f"{MQTT_TOPIC}/keepalive",
+                                json.dumps({
+                                    "status": "online",
+                                    "mqtt": "connected",
+                                    "oref": "ok" if (time.time() - last_successful_fetch) < 30 else "failing",
+                                    "uptime": round(time.time() - start_time),
+                                    "timestamp": round(time.time()),
+                                }),
+                                qos=0,
+                            )
+                            last_mqtt_success = time.time()
+                            last_keepalive = time.time()
+                            logger.info("Keep-alive published to MQTT")
             except aiomqtt.MqttError as me:
                 logger.error(f"MQTT error: {me}. Reconnecting in {reconnect_interval} seconds...")
                 await asyncio.sleep(reconnect_interval)

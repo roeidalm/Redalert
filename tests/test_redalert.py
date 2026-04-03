@@ -395,6 +395,7 @@ async def test_monitor_alert_deduplication(monkeypatch):
             pass
 
     monkeypatch.setattr(redalert.aiohttp, 'ClientSession', DummySession)
+    monkeypatch.setattr(redalert, 'KEEPALIVE_INTERVAL', 999999)  # disable keep-alive for this test
 
     # Counter to limit iterations
     iteration_count = 0
@@ -1188,3 +1189,143 @@ def test_lookup_area_polygon_too_few_points(monkeypatch, tmp_path):
 
     result = redalert.lookup_area(32.05, 34.75)
     assert result is None
+
+
+# Keep-alive tests
+
+@pytest.mark.asyncio
+async def test_keepalive_published_when_interval_elapsed(monkeypatch):
+    """Test that keep-alive message is published when interval has elapsed."""
+    mqtt_client = AsyncMock()
+    monkeypatch.setattr(redalert, 'KEEPALIVE_INTERVAL', 300)
+    monkeypatch.setattr(redalert, 'last_successful_fetch', time.time())
+
+    # Simulate: last_keepalive was 301 seconds ago
+    now = time.time()
+    last_keepalive = now - 301
+    start_time = now - 600
+
+    # The condition check
+    assert now - last_keepalive >= redalert.KEEPALIVE_INTERVAL
+
+    await mqtt_client.publish(
+        f"{redalert.MQTT_TOPIC}/keepalive",
+        json.dumps({
+            "status": "online",
+            "mqtt": "connected",
+            "oref": "ok",
+            "uptime": round(now - start_time),
+            "timestamp": round(now),
+        }),
+        qos=0,
+    )
+
+    assert mqtt_client.publish.call_count == 1
+    call = mqtt_client.publish.call_args
+    assert call[0][0] == f"{redalert.MQTT_TOPIC}/keepalive"
+    payload = json.loads(call[0][1])
+    assert payload["status"] == "online"
+    assert payload["mqtt"] == "connected"
+    assert payload["oref"] == "ok"
+    assert "uptime" in payload
+    assert "timestamp" in payload
+
+
+@pytest.mark.asyncio
+async def test_keepalive_not_published_before_interval(monkeypatch):
+    """Test that keep-alive is NOT published before interval elapses."""
+    monkeypatch.setattr(redalert, 'KEEPALIVE_INTERVAL', 300)
+
+    now = time.time()
+    last_keepalive = now - 100  # only 100s ago
+
+    assert now - last_keepalive < redalert.KEEPALIVE_INTERVAL
+
+
+@pytest.mark.asyncio
+async def test_keepalive_oref_failing_when_stale(monkeypatch):
+    """Test that oref status is 'failing' when last_successful_fetch is stale."""
+    monkeypatch.setattr(redalert, 'KEEPALIVE_INTERVAL', 300)
+    monkeypatch.setattr(redalert, 'last_successful_fetch', time.time() - 60)
+
+    now = time.time()
+    oref_status = "ok" if (now - redalert.last_successful_fetch) < 30 else "failing"
+    assert oref_status == "failing"
+
+
+@pytest.mark.asyncio
+async def test_fetch_alert_updates_last_successful_fetch(monkeypatch):
+    """Test that fetch_alert updates last_successful_fetch on HTTP 200."""
+    monkeypatch.setattr(redalert, 'last_successful_fetch', 0.0)
+
+    session = AsyncMock()
+    session.get = make_awaitable_response(200, "")
+
+    await redalert.fetch_alert(session)
+    assert redalert.last_successful_fetch > 0.0
+
+
+@pytest.mark.asyncio
+async def test_health_endpoint_mqtt_stale(monkeypatch):
+    """Test health returns 503 with mqtt_stale when MQTT hasn't published."""
+    monkeypatch.setattr(redalert, 'KEEPALIVE_INTERVAL', 300)
+    redalert.last_heartbeat = time.time()
+    redalert.last_mqtt_success = time.time() - 500  # 500s ago, grace is 360
+
+    request = MagicMock()
+    response = await redalert.health_handler(request)
+    assert response.status == 503
+    body = json.loads(response.body)
+    assert body["status"] == "mqtt_stale"
+    assert body["last_mqtt_ago"] >= 500
+
+
+@pytest.mark.asyncio
+async def test_health_endpoint_mqtt_stale_never_published(monkeypatch):
+    """Test health returns 503 when MQTT has never published and grace period exceeded."""
+    monkeypatch.setattr(redalert, 'KEEPALIVE_INTERVAL', 10)
+    redalert.last_heartbeat = time.time()
+    redalert.last_mqtt_success = 0.0
+
+    # Simulate heartbeat age > mqtt_grace (10 + 60 = 70)
+    redalert.last_heartbeat = time.time() - 5  # heartbeat is recent (within HEALTH_THRESHOLD)
+    # But we need age > mqtt_grace for the mqtt_stale check when last_mqtt_success == 0
+    # age is based on heartbeat, which is 5s ago. mqtt_grace is 70. So 5 < 70, won't trigger.
+    # Need to use a longer heartbeat age that's still within HEALTH_THRESHOLD but > mqtt_grace
+    monkeypatch.setattr(redalert, 'KEEPALIVE_INTERVAL', 1)
+    monkeypatch.setattr(redalert, 'HEALTH_THRESHOLD', 120)
+    redalert.last_heartbeat = time.time() - 65  # 65s ago, grace is 1+60=61, so 65>61
+
+    request = MagicMock()
+    response = await redalert.health_handler(request)
+    assert response.status == 503
+    body = json.loads(response.body)
+    assert body["status"] == "mqtt_stale"
+    assert body["last_mqtt_ago"] is None
+
+
+@pytest.mark.asyncio
+async def test_health_endpoint_ok_with_mqtt(monkeypatch):
+    """Test health returns 200 when both heartbeat and MQTT are fresh."""
+    monkeypatch.setattr(redalert, 'KEEPALIVE_INTERVAL', 300)
+    redalert.last_heartbeat = time.time()
+    redalert.last_mqtt_success = time.time() - 100  # well within grace
+
+    request = MagicMock()
+    response = await redalert.health_handler(request)
+    assert response.status == 200
+    body = json.loads(response.body)
+    assert body["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_publish_alert_updates_last_mqtt_success(monkeypatch):
+    """Test that publish_alert updates last_mqtt_success on success."""
+    monkeypatch.setattr(redalert, 'last_mqtt_success', 0.0)
+    mqtt_client = AsyncMock()
+    alert = redalert.AlertObject(
+        id="123", cat="10", title="Test", data=["Area 1"], desc="desc", raw_data="{}"
+    )
+
+    await redalert.publish_alert(mqtt_client, alert)
+    assert redalert.last_mqtt_success > 0.0

@@ -32,6 +32,8 @@ spec:
               value: "False"
             - name: HEALTH_PORT
               value: "8080"
+            - name: KEEPALIVE_INTERVAL
+              value: "300"
             - name: MQTT_USER
               valueFrom:
                 secretKeyRef:
