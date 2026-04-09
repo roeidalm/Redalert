@@ -38,7 +38,7 @@ The **RedAlert Relay System** is a Python-based service that fetches real-time a
 | `INCLUDE_TEST_ALERTS` | Include test alerts (True/False)              | `False`         | `True`                 |
 | `DEBUG`               | Enable debug mode with test data (True/False) | `False`         | `True`                 |
 | `HEALTH_PORT`         | Port for the health/area HTTP endpoint        | `8080`          | `9090`                 |
-| `KEEPALIVE_INTERVAL`  | Seconds between MQTT keep-alive messages      | `300`           | `600`                  |
+| `KEEPALIVE_INTERVAL`  | Seconds between MQTT keep-alive messages      | `300`           | `120`                  |
 
 ---
 
@@ -127,7 +127,7 @@ mqtt:
       json_attributes_topic: "/redalert/keepalive"
       json_attributes_template: >
         {{ value_json | tojson }}
-      expire_after: 600
+      expire_after: 300
 
     - name: "RedAlert Oref Status"
       state_topic: "/redalert/keepalive"
@@ -244,7 +244,7 @@ services:
       - INCLUDE_TEST_ALERTS=False
       - MQTT_PORT=1883
       - MQTT_TOPIC=/redalert
-      - KEEPALIVE_INTERVAL=300
+      - KEEPALIVE_INTERVAL=120
       - DEBUG=False
 ```
 
@@ -265,7 +265,7 @@ docker run -d \
   -e INCLUDE_TEST_ALERTS=False \
   -e MQTT_PORT=1883 \
   -e MQTT_TOPIC=/redalert \
-  -e KEEPALIVE_INTERVAL=300 \
+  -e KEEPALIVE_INTERVAL=120 \
   -e DEBUG=False \
   techblog/redalert
 ```
